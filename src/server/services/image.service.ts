@@ -315,6 +315,7 @@ type GetAllImagesRaw = {
   type: MediaType;
   metadata: Prisma.JsonValue;
   baseModel?: string;
+  ingestion: ImageIngestionStatus;
 };
 export type ImagesInfiniteModel = AsyncReturnType<typeof getAllImages>['items'][0];
 export const getAllImages = async ({
@@ -357,15 +358,9 @@ export const getAllImages = async ({
 }) => {
   const AND = [Prisma.sql`i."postId" IS NOT NULL`];
   let orderBy: string;
+  let isPrivate = false;
 
-  // ensure that only scanned images make it to the main feed if no user is logged in
-  if (!userId)
-    AND.push(Prisma.sql`i.ingestion = ${ImageIngestionStatus.Scanned}::"ImageIngestionStatus"`);
-  // otherwise, bring scanned images or all images created by the current user
-  else
-    AND.push(
-      Prisma.sql`(i.ingestion = ${ImageIngestionStatus.Scanned}::"ImageIngestionStatus" OR i."userId" = ${userId})`
-    );
+  // Filter unscanned images on the front-end
 
   // If User Isn't mod
   if (!isModerator) {
@@ -380,6 +375,7 @@ export const getAllImages = async ({
     AND.push(Prisma.sql`i."needsReview" = ${needsReview}`);
     AND.push(Prisma.sql`i."scannedAt" IS NOT NULL`);
     AND.push(Prisma.sql`p."publishedAt" IS NOT NULL`);
+    isPrivate = true;
   }
 
   if (tagReview) {
@@ -387,6 +383,7 @@ export const getAllImages = async ({
       SELECT 1 FROM "TagsOnImage" toi
       WHERE toi."imageId" = i.id AND toi."needsReview"
     )`);
+    isPrivate = true;
   }
 
   if (reportReview) {
@@ -395,6 +392,7 @@ export const getAllImages = async ({
       JOIN "Report" report ON report.id = imgr."reportId"
       WHERE imgr."imageId" = i.id AND report."status" = 'Pending'
     )`);
+    isPrivate = true;
   }
 
   if (excludeCrossPosts && modelVersionId) {
@@ -424,9 +422,14 @@ export const getAllImages = async ({
   }
 
   // Filter to specific user content
+  let selfRequest = false;
   if (username) {
     const targetUser = await dbRead.user.findUnique({ where: { username }, select: { id: true } });
     if (!targetUser) throw new Error('User not found');
+    if (userId) {
+      selfRequest = targetUser.id === userId;
+      isPrivate = true;
+    }
     AND.push(Prisma.sql`u."id" = ${targetUser.id}`);
   }
 
@@ -454,6 +457,7 @@ export const getAllImages = async ({
     const displayReviewItems = userId
       ? ` OR (ci."status" = 'REVIEW' AND ci."addedById" = ${userId})`
       : '';
+    if (userId) isPrivate = true;
 
     AND.push(Prisma.sql`EXISTS (
       SELECT 1 FROM "CollectionItem" ci
@@ -516,6 +520,7 @@ export const getAllImages = async ({
   }
 
   if (userId && !!reactions?.length) {
+    isPrivate = true;
     AND.push(
       Prisma.sql`EXISTS (
         SELECT 1
@@ -535,7 +540,9 @@ export const getAllImages = async ({
     JOIN "User" u ON u.id = i."userId"
     JOIN "Post" p ON p.id = i."postId" ${Prisma.raw(
       !isModerator
-        ? `AND (p."publishedAt" < now() ${userId ? `OR p."userId" = ${userId}` : ''})`
+        ? `AND (p."publishedAt" < now() ${
+            userId && selfRequest ? `OR p."userId" = ${userId}` : ''
+          })`
         : ''
     )}
 
@@ -578,6 +585,7 @@ export const getAllImages = async ({
       i.type,
       i.metadata,
       i."scannedAt",
+      i.ingestion,
       i."needsReview",
       i."userId",
       i."postId",
@@ -605,12 +613,6 @@ export const getAllImages = async ({
       COALESCE(im."dislikeCount", 0) "dislikeCount",
       COALESCE(im."heartCount", 0) "heartCount",
       COALESCE(im."commentCount", 0) "commentCount",
-      (
-        SELECT jsonb_agg(reaction)
-        FROM "ImageReaction"
-        WHERE "imageId" = i.id
-        AND "userId" = ${userId}
-      ) reactions,
       ${Prisma.raw(cursorProp ? cursorProp : 'null')} "cursorId"
       ${queryFrom}
       ORDER BY ${Prisma.raw(orderBy)} ${Prisma.raw(includeRank && optionalRank ? 'NULLS LAST' : '')}
@@ -622,6 +624,15 @@ export const getAllImages = async ({
   if (rawImages.length > limit) {
     const nextItem = rawImages.pop();
     nextCursor = nextItem?.cursorId;
+  }
+
+  let tagIdsVar: { tagId: number; imageId: number }[] | undefined;
+  if (include?.includes('tagIds')) {
+    const imageIds = rawImages.map((i) => i.id);
+    tagIdsVar = await dbRead.tagsOnImage.findMany({
+      where: { imageId: { in: imageIds }, disabled: false },
+      select: { tagId: true, imageId: true },
+    });
   }
 
   let tagsVar: (VotableTagModel & { imageId: number })[] | undefined;
@@ -663,6 +674,7 @@ export const getAllImages = async ({
         );
         if (userVote) tag.vote = userVote.vote > 0 ? 1 : -1;
       }
+      isPrivate = true;
     }
   }
 
@@ -711,6 +723,8 @@ export const getAllImages = async ({
       publishedAt?: Date | null;
       modelVersionId?: number | null;
       baseModel?: string | null;
+      tagIds?: number[];
+      ingestion: ImageIngestionStatus;
     }
   > = rawImages.map(
     ({
@@ -745,11 +759,13 @@ export const getAllImages = async ({
       },
       reactions: userId ? reactions?.map((r) => ({ userId, reaction: r })) ?? [] : [],
       tags: tagsVar?.filter((x) => x.imageId === i.id),
+      tagIds: tagIdsVar?.filter((x) => x.imageId === i.id).map((x) => x.tagId),
       report: reportVar?.find((x) => x.imageId === i.id),
     })
   );
 
   return {
+    isPrivate,
     nextCursor,
     items: images,
   };
@@ -788,6 +804,7 @@ export const getImage = async ({
       i."createdAt",
       i."mimeType",
       i."scannedAt",
+      i.ingestion,
       i."needsReview",
       i."postId",
       i.type,

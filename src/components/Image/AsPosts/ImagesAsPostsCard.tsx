@@ -48,7 +48,6 @@ export function ImagesAsPostsCard({
   const linkFilters = { ...filters, postId };
 
   const cover = data.images[0];
-  const browsingMode = useFiltersContext((state) => state.browsingMode);
   const carouselHeight = height - 58 - 8;
 
   const [embla, setEmbla] = useState<Embla | null>(null);
@@ -65,7 +64,7 @@ export function ImagesAsPostsCard({
   }, [embla]);
 
   const handleClick = () => {
-    queryUtils.image.getInfinite.setInfiniteData({ ...linkFilters, browsingMode }, () => {
+    queryUtils.image.getInfinite.setInfiniteData({ ...linkFilters }, () => {
       return {
         pages: [{ items: data.images, nextCursor: undefined, count: undefined }],
         pageParams: [],

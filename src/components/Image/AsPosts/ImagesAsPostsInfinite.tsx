@@ -12,6 +12,7 @@ import {
   Title,
 } from '@mantine/core';
 import { NextLink } from '@mantine/next';
+import { ImageIngestionStatus } from '@prisma/client';
 import { IconArrowsCross, IconCloudOff, IconPlus, IconStar } from '@tabler/icons-react';
 import { useRouter } from 'next/router';
 import { createContext, useContext, useEffect, useMemo, useState } from 'react';
@@ -29,8 +30,10 @@ import { ModelGenerationCard } from '~/components/Model/Generation/ModelGenerati
 import { useCurrentUser } from '~/hooks/useCurrentUser';
 import { useIsMobile } from '~/hooks/useIsMobile';
 import { useSetFilters } from '~/providers/FiltersProvider';
+import { useHiddenPreferencesContext } from '~/providers/HiddenPreferencesProvider';
 import { removeEmpty } from '~/utils/object-helpers';
 import { trpc } from '~/utils/trpc';
+import { isDefined } from '~/utils/type-guards';
 
 type ModelVersionsProps = { id: number; name: string };
 type ImagesAsPostsInfiniteState = {
@@ -90,7 +93,43 @@ export default function ImagesAsPostsInfinite({
       }
     );
 
-  const items = useMemo(() => data?.pages.flatMap((x) => x.items) ?? [], [data]);
+  const {
+    images: hiddenImages,
+    tags: hiddenTags,
+    users: hiddenUsers,
+    isLoading: isLoadingHidden,
+  } = useHiddenPreferencesContext();
+
+  const items = useMemo(() => {
+    // TODO - fetch user reactions for images separately
+    if (isLoadingHidden) return [];
+    const arr = data?.pages.flatMap((x) => x.items) ?? [];
+    const filtered = arr
+      .filter((x) => {
+        if (x.user.id === currentUser?.id) return true;
+        if (hiddenUsers.get(x.user.id)) return false;
+        return true;
+      })
+      .map(({ images, ...x }) => {
+        const filteredImages = images?.filter((i) => {
+          if (i.ingestion !== ImageIngestionStatus.Scanned) return false;
+          if (hiddenImages.get(i.id)) return false;
+          for (const tag of i.tagIds ?? []) {
+            if (hiddenTags.get(tag)) return false;
+          }
+          return true;
+        });
+
+        if (!filteredImages?.length) return null;
+
+        return {
+          ...x,
+          images: filteredImages,
+        };
+      })
+      .filter(isDefined);
+    return filtered;
+  }, [data, currentUser, hiddenImages, hiddenTags, hiddenUsers, isLoadingHidden]);
 
   // #region [infinite data fetching]
   useEffect(() => {

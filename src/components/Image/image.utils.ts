@@ -1,8 +1,10 @@
-import { MetricTimeframe, ReviewReactions } from '@prisma/client';
+import { MetricTimeframe, ReviewReactions, ImageIngestionStatus } from '@prisma/client';
 import { useMemo } from 'react';
 import { z } from 'zod';
+import { useCurrentUser } from '~/hooks/useCurrentUser';
 import { useZodRouteParams } from '~/hooks/useZodRouteParams';
 import { useFiltersContext, FilterKeys } from '~/providers/FiltersProvider';
+import { useHiddenPreferencesContext } from '~/providers/HiddenPreferencesProvider';
 import { ImageSort } from '~/server/common/enums';
 import { periodModeSchema } from '~/server/schema/base.schema';
 import { GetImagesByCategoryInput, GetInfiniteImagesInput } from '~/server/schema/image.schema';
@@ -47,9 +49,8 @@ export const useQueryImages = (
   options?: { keepPreviousData?: boolean; enabled?: boolean }
 ) => {
   filters ??= {};
-  const browsingMode = useFiltersContext((state) => state.browsingMode);
   const { data, ...rest } = trpc.image.getInfinite.useInfiniteQuery(
-    { ...filters, browsingMode },
+    { ...filters },
     {
       getNextPageParam: (lastPage) => lastPage.nextCursor,
       trpc: { context: { skipBatch: true } },
@@ -57,7 +58,28 @@ export const useQueryImages = (
     }
   );
 
-  const images = useMemo(() => data?.pages.flatMap((x) => x.items) ?? [], [data]);
+  const currentUser = useCurrentUser();
+  const {
+    images: hiddenImages,
+    tags: hiddenTags,
+    users: hiddenUsers,
+    isLoading: isLoadingHidden,
+  } = useHiddenPreferencesContext();
+
+  const images = useMemo(() => {
+    // TODO - fetch user reactions for images separately
+    if (isLoadingHidden) return [];
+    const arr = data?.pages.flatMap((x) => x.items) ?? [];
+    const filtered = arr.filter((x) => {
+      if (x.user.id === currentUser?.id) return true;
+      if (x.ingestion !== ImageIngestionStatus.Scanned) return false;
+      if (hiddenImages.get(x.id)) return false;
+      if (hiddenUsers.get(x.user.id)) return false;
+      for (const tag of x.tagIds ?? []) if (hiddenTags.get(tag)) return false;
+      return true;
+    });
+    return filtered;
+  }, [data, currentUser, hiddenImages, hiddenTags, hiddenUsers, isLoadingHidden]);
 
   return { data, images, ...rest };
 };

@@ -199,12 +199,15 @@ export const getInfiniteImagesHandler = async ({
   ctx: Context;
 }) => {
   try {
-    return await getAllImages({
+    const { isPrivate, ...results } = await getAllImages({
       ...input,
       userId: ctx.user?.id,
       isModerator: ctx.user?.isModerator,
       headers: { src: 'getInfiniteImagesHandler' },
+      include: ['tagIds'],
     });
+    if (isPrivate) ctx.cache.canCache = false;
+    return results;
   } catch (error) {
     if (error instanceof TRPCError) throw error;
     else throw throwDbError(error);
@@ -243,6 +246,7 @@ export const getImagesAsPostsInfiniteHandler = async ({
         limit: Math.ceil(limit * 3), // Overscan so that I can merge by postId
         userId: ctx.user?.id,
         headers: { src: 'getImagesAsPostsInfiniteHandler' },
+        include: ['tagIds'],
       });
 
       // Merge images by postId

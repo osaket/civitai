@@ -164,7 +164,7 @@ export const ingestImageSchema = z.object({
 });
 
 // #region [new schemas]
-const imageInclude = z.enum(['tags', 'count', 'cosmetics', 'report']);
+const imageInclude = z.enum(['tags', 'tagIds', 'count', 'cosmetics', 'report']);
 export type ImageInclude = z.infer<typeof imageInclude>;
 export type GetInfiniteImagesInput = z.infer<typeof getInfiniteImagesSchema>;
 export const getInfiniteImagesSchema = z
